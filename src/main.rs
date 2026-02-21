@@ -70,9 +70,9 @@ fn main() -> Result<()> {
             let content = std::fs::read_to_string(&script)?;
             let parsed =
                 code_monkey::parser::parse_script(&content).map_err(|e| anyhow::anyhow!("{e}"))?;
-            let blocks = code_monkey::grouper::group_into_blocks(&parsed);
 
             if dry_run {
+                let blocks = code_monkey::grouper::group_into_blocks(&parsed);
                 println!("=== Dry Run: {} ===\n", script.display());
                 for (i, block) in blocks.iter().enumerate() {
                     println!("--- Block {} ---", i + 1);
@@ -106,24 +106,38 @@ fn main() -> Result<()> {
             }
 
             // Non-dry-run present mode requires --agent
-            let _agent_addr = agent.ok_or_else(|| {
+            let agent_str = agent.ok_or_else(|| {
                 anyhow::anyhow!("--agent <ip:port> is required when not using --dry-run")
             })?;
 
-            // TUI mode — implemented in Stage 6
-            println!("TUI presentation mode not yet implemented.");
+            let agent_addr: std::net::SocketAddr = agent_str
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid agent address '{agent_str}': {e}"))?;
+
+            let mut presenter = code_monkey::client::Presenter::new(parsed, agent_addr);
+
+            println!("Connecting to agent at {agent_addr}...");
+            match presenter.connect() {
+                Ok(()) => println!("Connected!"),
+                Err(e) => {
+                    eprintln!(
+                        "Warning: Could not connect to agent: {e}. TUI will show disconnected state."
+                    );
+                }
+            }
+
+            let mut app = code_monkey::tui::App::new(presenter);
+            code_monkey::tui::run_tui(&mut app)?;
             Ok(())
         }
         Commands::Agent { script, port } => {
             let content = std::fs::read_to_string(&script)?;
             let _parsed =
                 code_monkey::parser::parse_script(&content).map_err(|e| anyhow::anyhow!("{e}"))?;
-            println!(
-                "Agent validated script '{}'. Listening on port {port}...",
-                script.display()
-            );
-            // Agent server — implemented in Stage 4
-            println!("Agent server not yet implemented.");
+
+            let executor = code_monkey::agent::AppleScriptExecutor;
+            let agent = code_monkey::agent::Agent::new(Box::new(executor), port);
+            agent.run()?;
             Ok(())
         }
     }
