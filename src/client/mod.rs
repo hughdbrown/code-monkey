@@ -43,7 +43,7 @@ impl Presenter {
     }
 
     pub fn connect(&mut self) -> Result<()> {
-        let stream = TcpStream::connect_timeout(&self.agent_addr, Duration::from_secs(5))?;
+        let mut stream = TcpStream::connect_timeout(&self.agent_addr, Duration::from_secs(5))?;
         stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -52,15 +52,29 @@ impl Presenter {
         let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(30));
         sock.set_tcp_keepalive(&keepalive)?;
 
-        self.connection = Some(stream);
+        // Validate the connection with a ping/pong handshake before storing
+        let encoded = encode_message(&Message::Ping)?;
+        stream.write_all(&encoded)?;
+        stream.flush()?;
 
-        // Validate the connection with a ping/pong handshake
-        let response = self.send_and_receive(Message::Ping)?;
+        let mut buf = vec![0u8; 65536];
+        let mut pending = Vec::new();
+        let response = loop {
+            let n = stream.read(&mut buf)?;
+            if n == 0 {
+                anyhow::bail!("Connection closed during handshake");
+            }
+            pending.extend_from_slice(&buf[..n]);
+            if let Some((msg, _)) = decode_message(&pending)? {
+                break msg;
+            }
+        };
+
         if response != Message::Pong {
-            self.connection = None;
             anyhow::bail!("Agent handshake failed: expected Pong, got {response:?}");
         }
 
+        self.connection = Some(stream);
         Ok(())
     }
 

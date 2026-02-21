@@ -92,6 +92,14 @@ impl Agent {
     }
 
     pub fn with_idle_timeout(mut self, read_timeout_secs: u64, max_idle_timeouts: u32) -> Self {
+        assert!(
+            read_timeout_secs >= 1,
+            "read_timeout_secs must be at least 1 to avoid a busy spin loop"
+        );
+        assert!(
+            max_idle_timeouts >= 1,
+            "max_idle_timeouts must be at least 1 to allow the handshake to complete"
+        );
         self.read_timeout_secs = read_timeout_secs;
         self.max_idle_timeouts = max_idle_timeouts;
         self
@@ -410,8 +418,17 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(10)))
             .unwrap();
 
-        // Send nothing — just wait for the agent to disconnect us
+        // Complete the ping/pong handshake so we test idle-after-connection
+        let ping = encode_message(&Message::Ping).unwrap();
+        stream.write_all(&ping).unwrap();
+        stream.flush().unwrap();
+
         let mut buf = vec![0u8; 4096];
+        let n = stream.read(&mut buf).unwrap();
+        let (response, _) = decode_message(&buf[..n]).unwrap().unwrap();
+        assert_eq!(response, Message::Pong);
+
+        // Now go idle — wait for the agent to disconnect us
         let result = stream.read(&mut buf);
 
         // The agent should close the connection after ~3 seconds of idle
