@@ -3,6 +3,7 @@ name = "code-monkey"
 version = "0.1.0"
 edition = "2024"
 description = "Automated presentation assistant — two-machine technical demo system"
+license = "MIT"
 
 [dependencies]
 anyhow = "1"
