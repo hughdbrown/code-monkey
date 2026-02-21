@@ -12,8 +12,9 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::client::{Presenter, StepResult};
 
+const MAX_AUTO_RECONNECT_ATTEMPTS: u32 = 3;
+
 #[derive(Debug, PartialEq)]
-#[allow(dead_code)]
 enum ConnectionState {
     Connected,
     Disconnected,
@@ -141,9 +142,27 @@ pub fn run_tui(app: &mut App) -> Result<()> {
                                 Some(format!("Agent error: {msg} (Enter=retry, s=skip)"));
                         }
                         Ok(StepResult::ConnectionLost) => {
-                            app.connection_state = ConnectionState::Disconnected;
-                            app.status_message =
-                                Some("Connection lost. Press Enter to reconnect.".into());
+                            // Auto-reconnect loop
+                            let mut reconnected = false;
+                            for attempt in 1..=MAX_AUTO_RECONNECT_ATTEMPTS {
+                                app.connection_state = ConnectionState::Reconnecting(attempt);
+                                app.status_message = Some(format!(
+                                    "Connection lost. Reconnecting ({attempt}/{MAX_AUTO_RECONNECT_ATTEMPTS})..."
+                                ));
+                                terminal.draw(|frame| ui(frame, app))?;
+                                std::thread::sleep(Duration::from_secs(1));
+                                if app.presenter.connect().is_ok() {
+                                    app.connection_state = ConnectionState::Connected;
+                                    app.status_message = Some("Reconnected!".into());
+                                    reconnected = true;
+                                    break;
+                                }
+                            }
+                            if !reconnected {
+                                app.connection_state = ConnectionState::Disconnected;
+                                app.status_message =
+                                    Some("Connection lost. Press Enter to reconnect.".into());
+                            }
                         }
                         Err(e) => {
                             app.status_message = Some(format!("Error: {e}"));
@@ -190,10 +209,14 @@ fn ui(frame: &mut Frame, app: &App) {
         section
     );
 
+    let reconnecting_label;
     let connection_indicator = match &app.connection_state {
         ConnectionState::Connected => "● Connected",
         ConnectionState::Disconnected => "○ Disconnected",
-        ConnectionState::Reconnecting(n) => &format!("◌ Reconnecting ({n})..."),
+        ConnectionState::Reconnecting(n) => {
+            reconnecting_label = format!("◌ Reconnecting ({n})...");
+            &reconnecting_label
+        }
     };
 
     let title_line = format!("{title_text}   {connection_indicator}");

@@ -326,6 +326,99 @@ mod tests {
     }
 
     #[test]
+    fn test_client_reconnects_after_disconnect() {
+        // First server — accepts one connection, responds once, then shuts down
+        let listener1 = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener1.local_addr().unwrap();
+
+        let handle1 = thread::spawn(move || {
+            let (mut stream, _) = listener1.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut buf = vec![0u8; 65536];
+            let mut pending = Vec::new();
+            let n = stream.read(&mut buf).unwrap();
+            pending.extend_from_slice(&buf[..n]);
+            if let Some((_, consumed)) = decode_message(&pending).unwrap() {
+                pending.drain(..consumed);
+                let response = Message::Ack {
+                    status: AckStatus::Ok,
+                    message: None,
+                };
+                let encoded = encode_message(&response).unwrap();
+                stream.write_all(&encoded).unwrap();
+                stream.flush().unwrap();
+            }
+            drop(stream);
+            // Return the listener so the port stays bound for reconnection
+            listener1
+        });
+
+        thread::sleep(Duration::from_millis(50));
+
+        let script = make_test_script(vec![
+            Directive::Say("first".into()),
+            Directive::Run,
+            Directive::Say("second".into()),
+            Directive::Run,
+        ]);
+        let mut presenter = Presenter::new(script, addr);
+        presenter.connect().unwrap();
+
+        // First step succeeds
+        let result = presenter.step().unwrap();
+        assert_eq!(result, StepResult::Executed);
+
+        // Server closes connection, so second step loses connection
+        // We need to wait for server to close and rebind
+        let listener_back = handle1.join().unwrap();
+
+        // Second step should detect connection lost
+        let result = presenter.step().unwrap();
+        assert_eq!(result, StepResult::ConnectionLost);
+        assert!(!presenter.is_connected());
+
+        // Start a new server on the same port to accept reconnection
+        let _handle2 = thread::spawn(move || {
+            let (mut stream, _) = listener_back.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut buf = vec![0u8; 65536];
+            let mut pending = Vec::new();
+            loop {
+                let n = match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                pending.extend_from_slice(&buf[..n]);
+                while let Some((_, consumed)) = decode_message(&pending).unwrap() {
+                    pending.drain(..consumed);
+                    let response = Message::Ack {
+                        status: AckStatus::Ok,
+                        message: None,
+                    };
+                    let encoded = encode_message(&response).unwrap();
+                    stream.write_all(&encoded).unwrap();
+                    stream.flush().unwrap();
+                }
+            }
+        });
+
+        thread::sleep(Duration::from_millis(50));
+
+        // Reconnect
+        assert!(presenter.connect().is_ok());
+        assert!(presenter.is_connected());
+
+        // Step should work again
+        let result = presenter.step().unwrap();
+        assert_eq!(result, StepResult::Executed);
+    }
+
+    #[test]
     fn test_client_pause_no_network() {
         let script = make_test_script(vec![Directive::Pause(Some(3))]);
         let addr: SocketAddr = "127.0.0.1:1".parse().unwrap();

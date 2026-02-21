@@ -132,12 +132,30 @@ fn main() -> Result<()> {
         }
         Commands::Agent { script, port } => {
             let content = std::fs::read_to_string(&script)?;
-            let _parsed =
+            let parsed =
                 code_monkey::parser::parse_script(&content).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let blocks = code_monkey::grouper::group_into_blocks(&parsed);
+            println!(
+                "Script validated: {} directives, {} action blocks",
+                parsed.lines.len(),
+                blocks.len()
+            );
+            if let Some(title) = &parsed.front_matter.title {
+                println!("Title: {title}");
+            }
 
             let executor = code_monkey::agent::AppleScriptExecutor;
             let agent = code_monkey::agent::Agent::new(Box::new(executor), port);
-            agent.run()?;
+            agent.run().map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("Address already in use") || msg.contains("AddrInUse") {
+                    anyhow::anyhow!(
+                        "Port {port} is already in use. Try a different port with --port <port>"
+                    )
+                } else {
+                    e
+                }
+            })?;
             Ok(())
         }
     }
