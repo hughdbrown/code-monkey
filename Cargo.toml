@@ -1,0 +1,15 @@
+[package]
+name = "code-monkey"
+version = "0.1.0"
+edition = "2024"
+description = "Automated presentation assistant — two-machine technical demo system"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+fastrand = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ratatui = "0.29"
+crossterm = "0.28"

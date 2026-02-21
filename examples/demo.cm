@@ -1,0 +1,24 @@
+---
+title: Code Monkey Demo
+typing_speed: 40
+---
+
+## Section: Introduction
+
+[SAY] Welcome to the Code Monkey demo.
+[SAY] Watch as I type commands automatically.
+
+[FOCUS] Terminal
+[TYPE] echo "Hello from Code Monkey!"
+[RUN]
+[PAUSE]
+
+[SAY] Let's try another command.
+
+[TYPE] ls -la
+[RUN]
+[PAUSE]
+
+## Section: Conclusion
+
+[SAY] That's the basic idea. Thanks for watching!
