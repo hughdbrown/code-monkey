@@ -77,11 +77,24 @@ impl ActionExecutor for AppleScriptExecutor {
 pub struct Agent {
     executor: Box<dyn ActionExecutor>,
     port: u16,
+    read_timeout_secs: u64,
+    max_idle_timeouts: u32,
 }
 
 impl Agent {
     pub fn new(executor: Box<dyn ActionExecutor>, port: u16) -> Self {
-        Self { executor, port }
+        Self {
+            executor,
+            port,
+            read_timeout_secs: 60,
+            max_idle_timeouts: 10, // 10 * 60s = 10 minutes max idle
+        }
+    }
+
+    pub fn with_idle_timeout(mut self, read_timeout_secs: u64, max_idle_timeouts: u32) -> Self {
+        self.read_timeout_secs = read_timeout_secs;
+        self.max_idle_timeouts = max_idle_timeouts;
+        self
     }
 
     pub fn run(&self) -> Result<()> {
@@ -101,7 +114,7 @@ impl Agent {
 
     fn handle_connection(&self, mut stream: TcpStream) -> Result<()> {
         stream.set_nodelay(true)?;
-        stream.set_read_timeout(Some(Duration::from_secs(60)))?;
+        stream.set_read_timeout(Some(Duration::from_secs(self.read_timeout_secs)))?;
 
         let sock = SockRef::from(&stream);
         let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(30));
@@ -110,7 +123,6 @@ impl Agent {
         let mut buf = vec![0u8; 65536];
         let mut pending = Vec::new();
         let mut idle_timeouts: u32 = 0;
-        const MAX_IDLE_TIMEOUTS: u32 = 10; // 10 * 60s = 10 minutes max idle
 
         loop {
             let n = match stream.read(&mut buf) {
@@ -123,7 +135,7 @@ impl Agent {
                     || e.kind() == std::io::ErrorKind::WouldBlock =>
                 {
                     idle_timeouts += 1;
-                    if idle_timeouts >= MAX_IDLE_TIMEOUTS {
+                    if idle_timeouts >= self.max_idle_timeouts {
                         eprintln!("Client idle too long, closing connection");
                         return Ok(());
                     }
@@ -225,10 +237,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         let handle = std::thread::spawn(move || {
-            let agent = Agent {
-                executor,
-                port: 0, // not used, already bound
-            };
+            let agent = Agent::new(executor, 0);
             // Accept exactly one connection
             if let Ok((stream, _)) = listener.accept() {
                 let _ = agent.handle_connection(stream);
@@ -341,10 +350,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
 
         let handle = std::thread::spawn(move || {
-            let agent = Agent {
-                executor: Box::new(executor),
-                port: 0,
-            };
+            let agent = Agent::new(Box::new(executor), 0);
             // Accept two connections
             for _ in 0..2 {
                 if let Ok((stream, _)) = listener.accept() {
@@ -381,5 +387,47 @@ mod tests {
         }
 
         drop(handle);
+    }
+
+    #[test]
+    fn test_agent_disconnects_idle_client() {
+        let (executor, _calls) = MockExecutor::new();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let handle = std::thread::spawn(move || {
+            let agent = Agent::new(Box::new(executor), 0)
+                .with_idle_timeout(1, 3); // 1s read timeout, 3 timeouts = 3s max idle
+            if let Ok((stream, _)) = listener.accept() {
+                let _ = agent.handle_connection(stream);
+            }
+        });
+
+        thread::sleep(Duration::from_millis(50));
+
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+
+        // Send nothing — just wait for the agent to disconnect us
+        let mut buf = vec![0u8; 4096];
+        let result = stream.read(&mut buf);
+
+        // The agent should close the connection after ~3 seconds of idle
+        match result {
+            Ok(0) => {} // expected: EOF from agent closing the connection
+            Err(e) => {
+                // Connection reset or similar is also acceptable
+                assert!(
+                    e.kind() == std::io::ErrorKind::ConnectionReset
+                        || e.kind() == std::io::ErrorKind::BrokenPipe,
+                    "Unexpected error kind: {e:?}"
+                );
+            }
+            Ok(n) => panic!("Expected disconnect but received {n} bytes"),
+        }
+
+        handle.join().unwrap();
     }
 }
