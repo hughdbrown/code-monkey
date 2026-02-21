@@ -1,0 +1,164 @@
+---
+title: AppleScript Actions Showcase
+typing_speed: 35
+typing_variance: 10
+---
+
+## Section: App Focus
+
+[SAY] Code Monkey can bring any application to the foreground.
+[SAY] This uses: tell application "X" to activate
+
+[FOCUS] Terminal
+[PAUSE]
+
+[SAY] Now let's switch to Finder.
+
+[FOCUS] Finder
+[PAUSE]
+
+[SAY] And back to Terminal.
+
+[FOCUS] Terminal
+[PAUSE]
+
+## Section: Typing
+
+[SAY] The typewriter simulates human typing — one character at a time
+[SAY] with randomized delays between keystrokes.
+[SAY] Each character is a separate AppleScript keystroke call.
+
+[TYPE] echo "This is typed one character at a time"
+[PAUSE]
+
+[SAY] RUN sends the Return key (key code 36).
+
+[RUN]
+[PAUSE]
+
+## Section: Keyboard Shortcuts
+
+[SAY] KEY sends any keystroke, with optional modifiers.
+[SAY] Modifiers: cmd, ctrl, shift, alt/opt
+
+[SAY] Single key — press Enter:
+[KEY] return
+[PAUSE]
+
+[SAY] Modifier combo — Cmd+L to clear the address bar (or select Terminal line):
+[KEY] cmd+l
+[PAUSE]
+
+[SAY] Multiple modifiers — Cmd+Shift+P for a command palette:
+[FOCUS] Visual Studio Code
+[KEY] cmd+shift+p
+[WAIT 1]
+[KEY] escape
+[PAUSE]
+
+[SAY] Arrow keys work too:
+[FOCUS] Terminal
+[KEY] up
+[PAUSE]
+
+[SAY] Ctrl+C to cancel:
+[KEY] ctrl+c
+[PAUSE]
+
+## Section: Clear Terminal
+
+[SAY] CLEAR sends Ctrl+L to reset the terminal viewport.
+
+[TYPE] echo "About to clear..."
+[RUN]
+[WAIT 1]
+[CLEAR]
+[PAUSE]
+
+## Section: Slide Control
+
+[SAY] SLIDE controls Keynote presentations.
+[SAY] These use Keynote's AppleScript dictionary:
+[SAY]   show next / show previous / set current slide
+
+[SAY] Advance to the next slide:
+[SLIDE next]
+[PAUSE]
+
+[SAY] Go back one slide:
+[SLIDE prev]
+[PAUSE]
+
+[SAY] Jump directly to slide 3:
+[SLIDE 3]
+[PAUSE]
+
+## Section: Wait and Exec
+
+[SAY] WAIT pauses execution for a fixed duration.
+[SAY] Unlike PAUSE, it does not wait for presenter input.
+
+[TYPE] echo "Waiting 2 seconds..."
+[RUN]
+[WAIT 2]
+[TYPE] echo "Done waiting."
+[RUN]
+[PAUSE]
+
+[SAY] EXEC runs an arbitrary shell command on the demo machine.
+[SAY] This bypasses AppleScript entirely — it's sh -c under the hood.
+
+[EXEC] open -a Preview ~/Desktop/diagram.png
+[PAUSE]
+
+## Section: Realistic Workflow
+
+[SAY] Here's a realistic sequence: create a Rust project,
+[SAY] open it in VS Code, and run the first build.
+
+[FOCUS] Terminal
+[CLEAR]
+[TYPE] cargo new hello-demo
+[RUN]
+[WAIT 2]
+[TYPE] cd hello-demo
+[RUN]
+[TYPE] code .
+[RUN]
+[WAIT 3]
+[PAUSE]
+
+[SAY] Now switch to VS Code and open the main file.
+
+[FOCUS] Visual Studio Code
+[KEY] cmd+p
+[WAIT 1]
+[TYPE] src/main.rs
+[KEY] return
+[WAIT 1]
+[PAUSE]
+
+[SAY] Add a line of code.
+
+[KEY] cmd+end
+[KEY] up
+[KEY] up
+[KEY] end
+[KEY] return
+[TYPE]     println!("Built with Code Monkey!");
+[KEY] cmd+s
+[PAUSE]
+
+[SAY] Switch back to Terminal and build.
+
+[FOCUS] Terminal
+[TYPE] cargo run
+[RUN]
+[WAIT 5]
+[PAUSE]
+
+## Section: End
+
+[SAY] That covers the full range of AppleScript actions.
+[SAY] Every directive maps to one or more osascript calls
+[SAY] sent through System Events or app-specific dictionaries.
