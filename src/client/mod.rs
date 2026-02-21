@@ -2,6 +2,8 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
+use socket2::{SockRef, TcpKeepalive};
+
 use anyhow::Result;
 
 use crate::grouper::{ActionBlock, BlockType, group_into_blocks};
@@ -42,9 +44,23 @@ impl Presenter {
 
     pub fn connect(&mut self) -> Result<()> {
         let stream = TcpStream::connect_timeout(&self.agent_addr, Duration::from_secs(5))?;
+        stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(Duration::from_secs(30)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+        let sock = SockRef::from(&stream);
+        let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(30));
+        sock.set_tcp_keepalive(&keepalive)?;
+
         self.connection = Some(stream);
+
+        // Validate the connection with a ping/pong handshake
+        let response = self.send_and_receive(Message::Ping)?;
+        if response != Message::Pong {
+            self.connection = None;
+            anyhow::bail!("Agent handshake failed: expected Pong, got {response:?}");
+        }
+
         Ok(())
     }
 
@@ -173,6 +189,8 @@ mod tests {
         }
     }
 
+    /// Mock server that handles the initial ping/pong handshake automatically,
+    /// then responds with the provided messages for subsequent requests.
     fn start_mock_server(
         responses: Vec<Message>,
     ) -> (SocketAddr, std::thread::JoinHandle<Vec<Message>>) {
@@ -189,6 +207,7 @@ mod tests {
             let mut response_iter = responses.into_iter();
             let mut buf = vec![0u8; 65536];
             let mut pending = Vec::new();
+            let mut handshake_done = false;
 
             loop {
                 let n = match stream.read(&mut buf) {
@@ -200,6 +219,16 @@ mod tests {
 
                 while let Some((msg, consumed)) = decode_message(&pending).unwrap() {
                     pending.drain(..consumed);
+
+                    // Auto-respond to the initial Ping handshake
+                    if !handshake_done && msg == Message::Ping {
+                        handshake_done = true;
+                        let encoded = encode_message(&Message::Pong).unwrap();
+                        stream.write_all(&encoded).unwrap();
+                        stream.flush().unwrap();
+                        continue;
+                    }
+
                     received.push(msg);
 
                     if let Some(response) = response_iter.next() {
@@ -224,7 +253,18 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let _accept_thread = thread::spawn(move || {
-            let _ = listener.accept();
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            // Handle the ping/pong handshake
+            let mut buf = vec![0u8; 65536];
+            let n = stream.read(&mut buf).unwrap();
+            let (msg, _) = decode_message(&buf[..n]).unwrap().unwrap();
+            assert_eq!(msg, Message::Ping);
+            let encoded = encode_message(&Message::Pong).unwrap();
+            stream.write_all(&encoded).unwrap();
+            stream.flush().unwrap();
         });
 
         thread::sleep(Duration::from_millis(50));
@@ -327,7 +367,38 @@ mod tests {
 
     #[test]
     fn test_client_reconnects_after_disconnect() {
-        // First server — accepts one connection, responds once, then shuts down
+        // Helper: read all complete messages from a stream, responding to pings
+        // automatically and returning the provided response for Execute messages.
+        fn serve_connection(
+            stream: &mut TcpStream,
+            execute_responses: &mut impl Iterator<Item = Message>,
+        ) {
+            let mut buf = vec![0u8; 65536];
+            let mut pending = Vec::new();
+            loop {
+                let n = match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                pending.extend_from_slice(&buf[..n]);
+                while let Some((msg, consumed)) = decode_message(&pending).unwrap() {
+                    pending.drain(..consumed);
+                    let response = if msg == Message::Ping {
+                        Message::Pong
+                    } else if let Some(resp) = execute_responses.next() {
+                        resp
+                    } else {
+                        break;
+                    };
+                    let encoded = encode_message(&response).unwrap();
+                    stream.write_all(&encoded).unwrap();
+                    stream.flush().unwrap();
+                }
+            }
+        }
+
+        // First server — handles handshake + one Execute, then shuts down
         let listener1 = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener1.local_addr().unwrap();
 
@@ -336,20 +407,12 @@ mod tests {
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            let mut buf = vec![0u8; 65536];
-            let mut pending = Vec::new();
-            let n = stream.read(&mut buf).unwrap();
-            pending.extend_from_slice(&buf[..n]);
-            if let Some((_, consumed)) = decode_message(&pending).unwrap() {
-                pending.drain(..consumed);
-                let response = Message::Ack {
-                    status: AckStatus::Ok,
-                    message: None,
-                };
-                let encoded = encode_message(&response).unwrap();
-                stream.write_all(&encoded).unwrap();
-                stream.flush().unwrap();
-            }
+            let mut responses = vec![Message::Ack {
+                status: AckStatus::Ok,
+                message: None,
+            }]
+            .into_iter();
+            serve_connection(&mut stream, &mut responses);
             drop(stream);
             // Return the listener so the port stays bound for reconnection
             listener1
@@ -371,7 +434,6 @@ mod tests {
         assert_eq!(result, StepResult::Executed);
 
         // Server closes connection, so second step loses connection
-        // We need to wait for server to close and rebind
         let listener_back = handle1.join().unwrap();
 
         // Second step should detect connection lost
@@ -379,37 +441,23 @@ mod tests {
         assert_eq!(result, StepResult::ConnectionLost);
         assert!(!presenter.is_connected());
 
-        // Start a new server on the same port to accept reconnection
+        // Start a new server on the same port — handles handshake + Execute
         let _handle2 = thread::spawn(move || {
             let (mut stream, _) = listener_back.accept().unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
-            let mut buf = vec![0u8; 65536];
-            let mut pending = Vec::new();
-            loop {
-                let n = match stream.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => n,
-                    Err(_) => break,
-                };
-                pending.extend_from_slice(&buf[..n]);
-                while let Some((_, consumed)) = decode_message(&pending).unwrap() {
-                    pending.drain(..consumed);
-                    let response = Message::Ack {
-                        status: AckStatus::Ok,
-                        message: None,
-                    };
-                    let encoded = encode_message(&response).unwrap();
-                    stream.write_all(&encoded).unwrap();
-                    stream.flush().unwrap();
-                }
-            }
+            let mut responses = vec![Message::Ack {
+                status: AckStatus::Ok,
+                message: None,
+            }]
+            .into_iter();
+            serve_connection(&mut stream, &mut responses);
         });
 
         thread::sleep(Duration::from_millis(50));
 
-        // Reconnect
+        // Reconnect (includes ping/pong handshake)
         assert!(presenter.connect().is_ok());
         assert!(presenter.is_connected());
 

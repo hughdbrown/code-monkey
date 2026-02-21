@@ -6,6 +6,8 @@ use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::Duration;
 
+use socket2::{SockRef, TcpKeepalive};
+
 use anyhow::Result;
 
 use crate::parser::types::{Directive, SlideAction};
@@ -98,18 +100,33 @@ impl Agent {
     }
 
     fn handle_connection(&self, mut stream: TcpStream) -> Result<()> {
+        stream.set_nodelay(true)?;
         stream.set_read_timeout(Some(Duration::from_secs(60)))?;
+
+        let sock = SockRef::from(&stream);
+        let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(30));
+        sock.set_tcp_keepalive(&keepalive)?;
+
         let mut buf = vec![0u8; 65536];
         let mut pending = Vec::new();
+        let mut idle_timeouts: u32 = 0;
+        const MAX_IDLE_TIMEOUTS: u32 = 10; // 10 * 60s = 10 minutes max idle
 
         loop {
             let n = match stream.read(&mut buf) {
                 Ok(0) => return Ok(()), // client disconnected
-                Ok(n) => n,
-                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
-                    continue; // read timeout, just keep waiting
+                Ok(n) => {
+                    idle_timeouts = 0;
+                    n
                 }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut
+                    || e.kind() == std::io::ErrorKind::WouldBlock =>
+                {
+                    idle_timeouts += 1;
+                    if idle_timeouts >= MAX_IDLE_TIMEOUTS {
+                        eprintln!("Client idle too long, closing connection");
+                        return Ok(());
+                    }
                     continue;
                 }
                 Err(e) => return Err(e.into()),
