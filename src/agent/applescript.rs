@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::process::Command;
 
 pub fn focus_app_script(app_name: &str) -> String {
-    let escaped = app_name.replace('"', "\\\"");
+    let escaped = app_name.replace('\\', "\\\\").replace('"', "\\\"");
     format!("tell application \"{escaped}\" to activate")
 }
 

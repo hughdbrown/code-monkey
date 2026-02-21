@@ -66,110 +66,120 @@ pub fn run_tui(app: &mut App) -> Result<()> {
         terminal.draw(|frame| ui(frame, app))?;
 
         // Poll with timeout for responsive updates
-        if event::poll(Duration::from_millis(250))?
-            && let Event::Key(key) = event::read()?
-        {
-            match key.code {
-                KeyCode::Char('q') => {
-                    app.should_quit = true;
-                }
-                KeyCode::Char('b') => {
-                    app.presenter.go_back();
-                    app.status_message = None;
-                    app.finished = false;
-                }
-                KeyCode::Char('s') => {
-                    // Skip current block (useful when agent is not responding)
-                    app.presenter.skip();
-                    app.status_message = None;
-                }
-                KeyCode::Enter => {
-                    if app.finished {
+        if event::poll(Duration::from_millis(250))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('q') => {
                         app.should_quit = true;
-                        continue;
                     }
-
-                    if app.connection_state != ConnectionState::Connected {
-                        // Try reconnecting
-                        match app.presenter.connect() {
-                            Ok(()) => {
-                                app.connection_state = ConnectionState::Connected;
-                                app.status_message = Some("Reconnected!".into());
-                            }
-                            Err(e) => {
-                                app.status_message = Some(format!("Reconnection failed: {e}"));
-                                continue;
-                            }
-                        }
+                    KeyCode::Char('b') => {
+                        app.presenter.go_back();
+                        app.status_message = None;
+                        app.finished = false;
                     }
+                    KeyCode::Char('s') => {
+                        // Skip current block (useful when agent is not responding)
+                        app.presenter.skip();
+                        app.status_message = None;
+                    }
+                    KeyCode::Enter => {
+                        if app.finished {
+                            app.should_quit = true;
+                            continue;
+                        }
 
-                    app.status_message = Some("Executing...".into());
-                    terminal.draw(|frame| ui(frame, app))?;
-
-                    match app.presenter.step() {
-                        Ok(StepResult::Executed) => {
-                            app.status_message = None;
-                        }
-                        Ok(StepResult::NarrationOnly) => {
-                            app.status_message = None;
-                        }
-                        Ok(StepResult::Paused(None)) => {
-                            app.status_message = None;
-                            // Just advance — the next Enter will handle the next block
-                        }
-                        Ok(StepResult::Paused(Some(secs))) => {
-                            app.status_message = Some(format!("Waiting {secs} seconds..."));
-                            terminal.draw(|frame| ui(frame, app))?;
-                            // Wait with interruptible polling
-                            let deadline = std::time::Instant::now() + Duration::from_secs(secs);
-                            while std::time::Instant::now() < deadline {
-                                if event::poll(Duration::from_millis(100))?
-                                    && let Event::Key(k) = event::read()?
-                                    && (k.code == KeyCode::Enter || k.code == KeyCode::Char('q'))
-                                {
-                                    break;
-                                }
-                            }
-                            app.status_message = None;
-                        }
-                        Ok(StepResult::Finished) => {
-                            app.finished = true;
-                            app.status_message =
-                                Some("Presentation complete! Press Enter or q to exit.".into());
-                        }
-                        Ok(StepResult::AgentError(msg)) => {
-                            app.status_message =
-                                Some(format!("Agent error: {msg} (Enter=retry, s=skip)"));
-                        }
-                        Ok(StepResult::ConnectionLost) => {
-                            // Auto-reconnect loop
-                            let mut reconnected = false;
-                            for attempt in 1..=MAX_AUTO_RECONNECT_ATTEMPTS {
-                                app.connection_state = ConnectionState::Reconnecting(attempt);
-                                app.status_message = Some(format!(
-                                    "Connection lost. Reconnecting ({attempt}/{MAX_AUTO_RECONNECT_ATTEMPTS})..."
-                                ));
-                                terminal.draw(|frame| ui(frame, app))?;
-                                std::thread::sleep(Duration::from_secs(1));
-                                if app.presenter.connect().is_ok() {
+                        if app.connection_state != ConnectionState::Connected {
+                            // Try reconnecting
+                            match app.presenter.connect() {
+                                Ok(()) => {
                                     app.connection_state = ConnectionState::Connected;
                                     app.status_message = Some("Reconnected!".into());
-                                    reconnected = true;
-                                    break;
+                                }
+                                Err(e) => {
+                                    app.status_message =
+                                        Some(format!("Reconnection failed: {e}"));
+                                    continue;
                                 }
                             }
-                            if !reconnected {
-                                app.connection_state = ConnectionState::Disconnected;
+                        }
+
+                        app.status_message = Some("Executing...".into());
+                        terminal.draw(|frame| ui(frame, app))?;
+
+                        match app.presenter.step() {
+                            Ok(StepResult::Executed) => {
+                                app.status_message = None;
+                            }
+                            Ok(StepResult::NarrationOnly) => {
+                                app.status_message = None;
+                            }
+                            Ok(StepResult::Paused(None)) => {
+                                app.status_message = None;
+                                // Just advance — the next Enter will handle the next block
+                            }
+                            Ok(StepResult::Paused(Some(secs))) => {
                                 app.status_message =
-                                    Some("Connection lost. Press Enter to reconnect.".into());
+                                    Some(format!("Waiting {secs} seconds..."));
+                                terminal.draw(|frame| ui(frame, app))?;
+                                // Wait with interruptible polling
+                                let deadline =
+                                    std::time::Instant::now() + Duration::from_secs(secs);
+                                while std::time::Instant::now() < deadline {
+                                    if event::poll(Duration::from_millis(100))? {
+                                        if let Event::Key(k) = event::read()? {
+                                            if k.code == KeyCode::Enter
+                                                || k.code == KeyCode::Char('q')
+                                            {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                app.status_message = None;
+                            }
+                            Ok(StepResult::Finished) => {
+                                app.finished = true;
+                                app.status_message = Some(
+                                    "Presentation complete! Press Enter or q to exit.".into(),
+                                );
+                            }
+                            Ok(StepResult::AgentError(msg)) => {
+                                app.status_message =
+                                    Some(format!("Agent error: {msg} (Enter=retry, s=skip)"));
+                            }
+                            Ok(StepResult::ConnectionLost) => {
+                                // Auto-reconnect loop
+                                let mut reconnected = false;
+                                for attempt in 1..=MAX_AUTO_RECONNECT_ATTEMPTS {
+                                    app.connection_state =
+                                        ConnectionState::Reconnecting(attempt);
+                                    app.status_message = Some(format!(
+                                        "Connection lost. Reconnecting ({attempt}/{MAX_AUTO_RECONNECT_ATTEMPTS})..."
+                                    ));
+                                    terminal.draw(|frame| ui(frame, app))?;
+                                    std::thread::sleep(Duration::from_secs(1));
+                                    if app.presenter.connect().is_ok() {
+                                        app.connection_state = ConnectionState::Connected;
+                                        app.status_message =
+                                            Some("Reconnected!".into());
+                                        reconnected = true;
+                                        break;
+                                    }
+                                }
+                                if !reconnected {
+                                    app.connection_state = ConnectionState::Disconnected;
+                                    app.status_message = Some(
+                                        "Connection lost. Press Enter to reconnect.".into(),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                app.status_message = Some(format!("Error: {e}"));
                             }
                         }
-                        Err(e) => {
-                            app.status_message = Some(format!("Error: {e}"));
-                        }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
